@@ -1,0 +1,5 @@
+# bin = ""
+arch = "aarch64"
+host = "${PKGS_ARCH}-none-elf"
+cross_prefix = "${PKGS_HOST}-"
+extra_programs = []

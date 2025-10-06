@@ -1,0 +1,5 @@
+# Toolchain configuration for Linux testing with system compilers
+arch: x86_64
+host: ${PKGS_ARCH}-linux-gnu
+cross_prefix: ""
+bin: /usr/bin

@@ -1,0 +1,35 @@
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    wget \
+    curl \
+    ca-certificates \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Copy pre-built Linux binary
+COPY bin/makepkg-linux ./makepkg
+
+# Copy examples directory for test configs
+COPY examples/ ./examples/
+
+# Pre-download packages for caching
+RUN mkdir -p /tmp/package-cache && \
+    cd /tmp/package-cache && \
+    wget -q https://zlib.net/zlib-1.3.1.tar.gz && \
+    wget -q https://curl.se/download/curl-8.5.0.tar.gz && \
+    wget -q http://ftp.astron.com/pub/file/file-5.45.tar.gz
+
+# Set the default command
+CMD ["./makepkg", "--help"]
