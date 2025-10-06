@@ -54,7 +54,8 @@ packages:
     url: https://curl.se/download/curl-8.5.0.tar.gz
     build: |
       ./configure --host=${PKGS_HOST} --prefix=/usr --enable-static --disable-shared --with-zlib \
-        --without-ssl --without-libpsl --without-libidn2 --disable-ldap --disable-rtsp --disable-manual
+        --without-ssl --without-libpsl --without-libidn2 --disable-ldap --disable-rtsp --disable-manual \
+        --without-brotli
       make curl_LDFLAGS="-all-static"
     install: |
       make install DESTDIR=$SYS_ROOT
@@ -188,23 +189,6 @@ packages:
 
   - name: python3
     url: https://www.python.org/ftp/python/3.13.7/Python-3.13.7.tar.xz
-    # Enabled features (based on available dependencies):
-    #   - zlib compression (zlib)
-    #   - SSL/TLS and hashlib (_ssl, _hashlib via openssl)
-    #   - readline support (readline)
-    #   - curses/ncurses (_curses, _curses_panel via ncurses)
-    #   - SQLite database (_sqlite3 via sqlite3)
-    #   - brotli compression (via openssl with brotli support)
-    #
-    # Missing optional features (dependencies not available):
-    #   - bz2 compression (_bz2) - requires: libbz2
-    #   - lzma/xz compression (_lzma) - requires: liblzma (xz-utils)
-    #   - XML parsing (pyexpat) - requires: libexpat
-    #   - Foreign function interface (ctypes, _ctypes) - requires: libffi
-    #   - UUID generation (_uuid) - requires: libuuid
-    #   - DBM databases (_dbm, _gdbm) - requires: gdbm
-    #   - Tk GUI toolkit (_tkinter) - requires: tcl/tk
-    #   - High-precision decimal (_decimal with system lib) - using builtin libmpdec
     env:
       - CPPFLAGS=-I${SYS_ROOT}/usr/include -I${SYS_ROOT}/usr/include/ncursesw
       - LDFLAGS=-L${SYS_ROOT}/usr/lib -L${SYS_ROOT}/lib

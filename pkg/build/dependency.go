@@ -1,18 +1,20 @@
-package pkg
+package build
 
 import (
 	"fmt"
+
+	"github.com/aar10n/makepkg/pkg/config"
 )
 
-// BuildOrder resolves the dependency graph and returns packages in build order.
+// GetBuildOrder resolves the dependency graph and returns packages in build order.
 // Returns an error if there are circular dependencies or missing dependencies.
-func BuildOrder(config *Config) ([][]string, error) {
-	pkgMap := make(map[string]*Package)
-	for i := range config.Packages {
-		pkgMap[config.Packages[i].Name] = &config.Packages[i]
+func GetBuildOrder(cfg *config.Config) ([][]string, error) {
+	pkgMap := make(map[string]*config.Package)
+	for i := range cfg.Packages {
+		pkgMap[cfg.Packages[i].Name] = &cfg.Packages[i]
 	}
 
-	for _, pkg := range config.Packages {
+	for _, pkg := range cfg.Packages {
 		for _, dep := range pkg.DependsOn {
 			if _, exists := pkgMap[dep]; !exists {
 				return nil, fmt.Errorf("package %s depends on non-existent package %s", pkg.Name, dep)
@@ -22,7 +24,7 @@ func BuildOrder(config *Config) ([][]string, error) {
 
 	reverseGraph := make(map[string][]string)
 	reverseInDegree := make(map[string]int)
-	for _, pkg := range config.Packages {
+	for _, pkg := range cfg.Packages {
 		reverseInDegree[pkg.Name] = len(pkg.DependsOn)
 		for _, dep := range pkg.DependsOn {
 			reverseGraph[dep] = append(reverseGraph[dep], pkg.Name)
@@ -57,7 +59,7 @@ func BuildOrder(config *Config) ([][]string, error) {
 		queue = newQueue
 	}
 
-	if processed != len(config.Packages) {
+	if processed != len(cfg.Packages) {
 		return nil, fmt.Errorf("circular dependency detected")
 	}
 

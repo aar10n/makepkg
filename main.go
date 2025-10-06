@@ -2,18 +2,29 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/pflag"
 
-	"github.com/aar10n/makepkg/pkg"
+	"github.com/aar10n/makepkg/pkg/build"
+	"github.com/aar10n/makepkg/pkg/config"
+	"github.com/aar10n/makepkg/pkg/logger"
+)
+
+var (
+	signalHandler = make(chan struct{})
+	version       = "dev"     // set by goreleaser
+	commit        = "unknown" // set by goreleaser
+	date          = "unknown" // set by goreleaser
 )
 
 func main() {
-	// Define command-line flags
 	configFile := pflag.StringP("file", "f", "", "Read `FILE` as the package configuration file")
 	toolchainFile := pflag.StringP("toolchain", "t", "", "Read `FILE` as the toolchain configuration file")
 	sysroot := pflag.StringP("sysroot", "s", "", "The `PATH` to use as the sysroot when installing and building")
@@ -21,11 +32,15 @@ func main() {
 	arch := pflag.StringP("arch", "a", "", "The target `ARCH` to build for (e.g., x86_64)")
 	host := pflag.StringP("host", "h", "", "The target `HOST` to build for (e.g., x86_64-linux-musl)")
 	jobs := pflag.IntP("jobs", "j", 1, "The maximum concurrency `N` for building packages")
+	makeJobs := pflag.IntP("make-jobs", "m", 1, "The number of jobs `N` for each make invocation")
 	quiet := pflag.BoolP("quiet", "q", false, "Do not log build output, only info and summary")
 	failFast := pflag.BoolP("fail-fast", "F", false, "Stop building immediately on first error")
 	dryRun := pflag.BoolP("dry-run", "n", false, "Print what would be done without actually building")
 	verbose := pflag.BoolP("verbose", "v", false, "Enable verbose debug logging")
 	clean := pflag.Bool("clean", false, "Clean package builds instead of building them")
+	alwaysMake := pflag.BoolP("always-make", "B", false, "Clean then build packages (force rebuild)")
+	alwaysInstall := pflag.BoolP("always-install", "I", false, "Always reinstall packages ignoring cache")
+	showVersion := pflag.BoolP("version", "V", false, "Show version information")
 
 	pflag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS] [package...]\n\n", os.Args[0])
@@ -38,12 +53,23 @@ func main() {
 
 	pflag.Parse()
 
+	if *showVersion {
+		fmt.Printf("makepkg %s\n", version)
+		if commit != "unknown" {
+			fmt.Printf("commit: %s\n", commit)
+		}
+		if date != "unknown" {
+			fmt.Printf("built: %s\n", date)
+		}
+		os.Exit(0)
+	}
+
 	configPath := *configFile
 	packageFilter := pflag.Args()
 
 	if configPath != "" {
 		if _, err := os.Stat(configPath); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Error: configuration file %s not found\n", configPath)
+			logger.Errorf("configuration file %s not found", configPath)
 			os.Exit(1)
 		}
 	}
@@ -52,7 +78,7 @@ func main() {
 	if !filepath.IsAbs(buildDir) {
 		absPath, err := filepath.Abs(buildDir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error resolving build directory: %v\n", err)
+			logger.Errorf("resolving build directory: %v", err)
 			os.Exit(1)
 		}
 		buildDir = absPath
@@ -62,106 +88,130 @@ func main() {
 	if sysrootPath != "" && !filepath.IsAbs(sysrootPath) {
 		absPath, err := filepath.Abs(sysrootPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error resolving sysroot: %v\n", err)
+			logger.Errorf("resolving sysroot: %v", err)
 			os.Exit(1)
 		}
 		sysrootPath = absPath
 	}
 
+	if err := os.MkdirAll(buildDir, 0755); err != nil {
+		logger.Errorf("creating build directory: %v", err)
+		os.Exit(1)
+	}
+
+	logger.SetVerbose(*verbose)
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		logger.Errorf("loading configuration: %v", err)
+		os.Exit(1)
+	}
+
+	toolchainCfg, _, err := config.LoadToolchainConfig(*toolchainFile)
+	if err != nil {
+		logger.Errorf("loading toolchain configuration: %v", err)
+		os.Exit(1)
+	}
+
+	if toolchainCfg != nil {
+		cfg.Toolchain = config.MergeToolchainConfig(&cfg.Toolchain, toolchainCfg)
+	}
+
 	if *sysroot == "" {
-		fmt.Println("Warning: No sysroot specified. Packages will be installed to system root (/).")
+		logger.Warn("No sysroot specified. Packages will be installed to system root (/).")
 		fmt.Print("This may modify your system. Continue? [y/N]: ")
 
 		reader := bufio.NewReader(os.Stdin)
 		response, err := reader.ReadString('\n')
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
+			logger.Errorf("reading input: %v", err)
 			os.Exit(1)
 		}
 
 		response = strings.TrimSpace(strings.ToLower(response))
 		if response != "y" && response != "yes" {
-			fmt.Println("Aborted.")
+			logger.Info("Aborted.")
 			os.Exit(0)
 		}
 	}
 
-	if err := os.MkdirAll(buildDir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating build directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	pkg.VerboseLogging = *verbose
-
-	config, err := pkg.LoadConfig(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)
-		os.Exit(1)
-	}
-
-	toolchainConfig, err := pkg.LoadToolchainConfig(*toolchainFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading toolchain configuration: %v\n", err)
-		os.Exit(1)
-	}
-
-	if toolchainConfig != nil {
-		config.Toolchain = pkg.MergeToolchainConfig(&config.Toolchain, toolchainConfig)
-	}
-
 	archValue := *arch
-	if archValue == "" && config.Toolchain.Arch != "" {
-		archValue = config.Toolchain.Arch
+	if archValue == "" && cfg.Toolchain.Arch != "" {
+		archValue = cfg.Toolchain.Arch
 	}
 	hostValue := *host
-	if hostValue == "" && config.Toolchain.Host != "" {
-		hostValue = config.Toolchain.Host
+	if hostValue == "" && cfg.Toolchain.Host != "" {
+		hostValue = cfg.Toolchain.Host
 	}
 
 	if len(packageFilter) > 0 {
 		for _, pkgName := range packageFilter {
-			if config.GetPackageByName(pkgName) == nil {
-				fmt.Fprintf(os.Stderr, "Error: package '%s' not found in configuration\n", pkgName)
+			if cfg.GetPackageByName(pkgName) == nil {
+				logger.Errorf("package '%s' not found in configuration", pkgName)
 				os.Exit(1)
 			}
 		}
-		fmt.Printf("Loaded %d packages from %s (filtered to %d)\n", len(config.Packages), config.ConfigPath, len(packageFilter))
+		logger.Info("Loaded %d packages from %s (filtered to %d)", len(cfg.Packages), cfg.FilePath, len(packageFilter))
 	} else {
-		fmt.Printf("Loaded %d packages from %s\n", len(config.Packages), config.ConfigPath)
+		logger.Info("Loaded %d packages from %s", len(cfg.Packages), cfg.FilePath)
 	}
 	if sysrootPath != "" {
-		fmt.Printf("Sysroot: %s\n", sysrootPath)
+		logger.Info("Using sysroot: %s", sysrootPath)
 	}
-	fmt.Printf("Concurrency: %d\n", *jobs)
-	fmt.Println()
+	logger.Info("Concurrency: %d", *jobs)
+	logger.Info("")
 
-	// Create builder config
-	builderCfg := pkg.BuilderConfig{
+	builderCfg := build.BuilderConfig{
 		Quiet:          *quiet,
 		Verbose:        *verbose,
 		FailFast:       *failFast,
 		DryRun:         *dryRun,
+		AlwaysInstall:  *alwaysInstall,
 		MaxConcurrency: *jobs,
+		MakeJobs:       *makeJobs,
 	}
 
-	// Create builder
-	builder, err := pkg.NewBuilder(config, buildDir, sysrootPath, hostValue, builderCfg)
+	builder, err := build.NewBuilder(builderCfg, cfg, buildDir, sysrootPath, hostValue)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating builder: %v\n", err)
+		logger.Errorf("creating builder: %v", err)
 		os.Exit(1)
 	}
 
-	// Run clean or build
-	if *clean {
+	ctx := context.Background()
+	ctx = setupSignalHandler(ctx)
+	if *alwaysMake {
 		if err := builder.Clean(packageFilter); err != nil {
-			fmt.Fprintf(os.Stderr, "Clean process encountered errors: %v\n", err)
+			logger.Errorf("Clean process encountered errors: %v", err)
 		}
-	} else {
-		if err := builder.Build(packageFilter); err != nil {
-			fmt.Fprintf(os.Stderr, "Build process encountered errors: %v\n", err)
+		if err := builder.Build(ctx, packageFilter); err != nil {
+			logger.Errorf("Build process encountered errors: %v", err)
 		}
 
-		// Print summary
+		builder.PrintSummary()
+	} else if *clean {
+		if err := builder.Clean(packageFilter); err != nil {
+			logger.Errorf("Clean process encountered errors: %v", err)
+		}
+	} else {
+		if err := builder.Build(ctx, packageFilter); err != nil {
+			logger.Errorf("Build process encountered errors: %v", err)
+		}
+
 		builder.PrintSummary()
 	}
+}
+
+func setupSignalHandler(ctx context.Context) context.Context {
+	close(signalHandler)
+	ctx, cancel := context.WithCancelCause(ctx)
+
+	c := make(chan os.Signal, 2)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-c
+		cancel(context.Canceled)
+		<-c
+		os.Exit(1)
+	}()
+
+	return ctx
 }

@@ -12,7 +12,17 @@ clean:
 	rm -rf bin/
 
 install: build
-	install -D -m 755 bin/makepkg $(DESTDIR)/usr/local/bin/makepkg
+	@if [ -z "$(BINDIR)" ]; then \
+		echo "Please set BINDIR to the installation directory (e.g., /usr/local/bin)"; \
+		exit 1; \
+	fi
+	@if [ -z "$(MANDIR)" ]; then \
+  		echo "Please set MANDIR to the installation directory (e.g., /usr/local/bin)"; \
+  		exit 1; \
+	fi
+	install -m 755 bin/makepkg $(BINDIR)/makepkg
+	mkdir -p $(MANDIR)/man1
+	install -m 644 makepkg.1 $(MANDIR)/man1/makepkg.1
 
 # Docker targets for testing on Linux x86_64
 docker-build: build-linux
