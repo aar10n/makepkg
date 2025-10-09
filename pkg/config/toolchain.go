@@ -9,17 +9,67 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 
+	"github.com/aar10n/makepkg/pkg/env"
 	"github.com/aar10n/makepkg/pkg/logger"
 )
 
+var crossPrefixPrograms = []string{
+	"ar", "as", "ld", "nm", "objcopy", "objdump", "ranlib", "strip",
+	"addr2line", "c++filt", "dlltool", "elfedit", "gprof", "readelf",
+	"size", "strings", "gcc", "g++",
+}
+
+var programAliases = map[string]string{
+	"cc":  "gcc",
+	"c++": "g++",
+}
+
 // Toolchain represents toolchain configuration.
 type Toolchain struct {
-	FilePath      string
+	FilePath      string   `yaml:"-" toml:"-"`
 	Arch          string   `yaml:"arch" toml:"arch"`
 	Bin           string   `yaml:"bin" toml:"bin"`
 	Host          string   `yaml:"host" toml:"host"`
 	CrossPrefix   string   `yaml:"cross_prefix" toml:"cross_prefix"`
 	ExtraPrograms []string `yaml:"extra_programs" toml:"extra_programs"`
+}
+
+func (t *Toolchain) Subst(env env.Env) {
+	env = env.Clone()
+	env.Set("FILE_DIR", filepath.Dir(t.FilePath))
+
+	var err error
+	t.Arch = env.Subst(t.Arch)
+	binPath := env.Subst(t.Bin)
+	if t.Bin, err = filepath.Abs(binPath); err != nil {
+		t.Bin = env.Subst(binPath)
+	}
+	t.CrossPrefix = env.Subst(t.CrossPrefix)
+
+	for i, prog := range t.ExtraPrograms {
+		t.ExtraPrograms[i] = env.Subst(prog)
+	}
+}
+
+func (t *Toolchain) AddToEnv(env env.Env) {
+	crossPrefixPath := filepath.Join(t.Bin, env.Subst(t.CrossPrefix))
+	if t.CrossPrefix != "" {
+		env.Set("CROSS_PREFIX", env.Subst(t.CrossPrefix))
+	}
+
+	for _, prog := range crossPrefixPrograms {
+		env.Set(toolToEnvVar(prog), crossPrefixPath+prog)
+	}
+
+	for alias, target := range programAliases {
+		if targetPath, exists := env.Get(toolToEnvVar(target)); exists {
+			env.Set(toolToEnvVar(alias), targetPath)
+		}
+	}
+
+	for _, prog := range t.ExtraPrograms {
+		env.Set(toolToEnvVar(prog), filepath.Join(t.Bin, prog))
+	}
 }
 
 // LoadToolchainConfig reads and parses a standalone toolchain configuration file (YAML or TOML).
@@ -75,6 +125,11 @@ func LoadToolchainConfig(path string) (*Toolchain, string, error) {
 		}
 	}
 
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to resolve toolchain file path: %w", err)
+	}
+
 	toolchainConfig.FilePath = path
 	logger.Debug("Successfully loaded toolchain configuration from %s", path)
 	return &toolchainConfig, path, nil
@@ -107,6 +162,7 @@ func MergeToolchainConfig(base, override *Toolchain) Toolchain {
 		result.ExtraPrograms = override.ExtraPrograms
 	}
 
+	result.FilePath = override.FilePath
 	return result
 }
 
@@ -123,4 +179,11 @@ func findToolchainFile() (string, error) {
 	}
 
 	return "", fmt.Errorf("no toolchain file found (tried: %s)", strings.Join(candidates, ", "))
+}
+
+func toolToEnvVar(name string) string {
+	envVar := strings.ToUpper(name)
+	envVar = strings.ReplaceAll(envVar, "-", "_")
+	envVar = strings.ReplaceAll(envVar, "+", "X")
+	return envVar
 }

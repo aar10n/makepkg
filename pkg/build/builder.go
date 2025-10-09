@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/aar10n/makepkg/pkg/env"
 	"io"
 	"os"
 	"os/exec"
@@ -15,6 +14,7 @@ import (
 	"github.com/aar10n/makepkg/pkg/cache"
 	"github.com/aar10n/makepkg/pkg/config"
 	"github.com/aar10n/makepkg/pkg/download"
+	"github.com/aar10n/makepkg/pkg/env"
 	"github.com/aar10n/makepkg/pkg/logger"
 )
 
@@ -105,7 +105,12 @@ func NewBuilder(builderCfg BuilderConfig, cfg *config.Config, buildDir, sysroot,
 // If packageFilter is non-empty, only builds the specified packages (and their dependencies).
 func (b *Builder) Build(ctx context.Context, packageFilter []string) error {
 	b.Info("Starting build process...")
+	b.config.Toolchain.Subst(b.envManager)
+	for i := range b.config.Packages {
+		b.config.Packages[i].Subst(b.envManager)
+	}
 
+	b.config.Toolchain.AddToEnv(b.envManager)
 	if !b.builderCfg.DryRun {
 		if err := os.MkdirAll(b.sysroot, 0o755); err != nil {
 			return fmt.Errorf("failed to create sysroot directory: %w", err)
@@ -131,11 +136,6 @@ func (b *Builder) Build(ctx context.Context, packageFilter []string) error {
 
 	b.buildRequiredByMap(filterSet)
 
-	err = env.UpdateEnvForToolchain(b.envManager, &b.config.Toolchain)
-	if err != nil {
-		return fmt.Errorf("failed to set up toolchain environment: %w", err)
-	}
-
 	for _, level := range buildOrder {
 		if b.isStopped() {
 			b.Error("\nBuild stopped due to error (fail-fast mode)")
@@ -160,272 +160,6 @@ func (b *Builder) Build(ctx context.Context, packageFilter []string) error {
 	}
 
 	return nil
-}
-
-func (b *Builder) buildLevel(ctx context.Context, packageNames []string) error {
-	pool := NewWorkerPool(b.builderCfg.MaxConcurrency)
-	errors := make([]error, 0)
-	var errorsMutex sync.Mutex
-
-	for _, pkgName := range packageNames {
-		if b.isStopped() {
-			break
-		}
-
-		name := pkgName
-		pool.SubmitWithStop(func() {
-			if b.isStopped() {
-				return
-			}
-
-			pkg := b.config.GetPackageByName(name)
-			if pkg == nil {
-				errorsMutex.Lock()
-				errors = append(errors, fmt.Errorf("package %s not found", name))
-				errorsMutex.Unlock()
-				if b.builderCfg.FailFast {
-					b.stop()
-				}
-				return
-			}
-
-			if err := b.buildPackage(ctx, pkg); err != nil {
-				errorsMutex.Lock()
-				errors = append(errors, err)
-				errorsMutex.Unlock()
-				if b.builderCfg.FailFast {
-					b.stop()
-				}
-			}
-		}, b.stopChan)
-	}
-
-	pool.Wait()
-
-	if len(errors) > 0 {
-		return fmt.Errorf("build errors: %v", errors)
-	}
-	return nil
-}
-
-func (b *Builder) buildPackage(ctx context.Context, pkg *config.Package) error {
-	pkg.URL = b.envManager.Subst(pkg.URL)
-	pkg.Build = b.envManager.Subst(pkg.Build)
-	pkg.Install = b.envManager.Subst(pkg.Install)
-	pkg.Clean = b.envManager.Subst(pkg.Clean)
-
-	requiredBy := b.requiredBy[pkg.Name]
-	b.Info("Building %s%s...", pkg.Name, formatRequiredBy(requiredBy))
-
-	needsRebuild, err := b.cache.NeedsRebuild(pkg, b.sysroot, b.host)
-	if err != nil {
-		return fmt.Errorf("failed to check cache for %s: %w", pkg.Name, err)
-	}
-
-	needsReinstall := b.builderCfg.AlwaysInstall
-	if !needsReinstall {
-		needsReinstall, err = b.cache.NeedsReinstall(pkg, b.sysroot, b.host)
-		if err != nil {
-			return fmt.Errorf("failed to check reinstall cache for %s: %w", pkg.Name, err)
-		}
-	}
-
-	if !needsRebuild && !needsReinstall {
-		b.Info("  %s is up to date, skipping", pkg.Name)
-		b.recordResult(pkg.Name, true, nil, "")
-		return nil
-	}
-
-	var buildOutput string
-	var installOutput string
-	sourceDir := filepath.Join(b.buildDir, pkg.Name, "source")
-
-	pkgEnv := b.envManager.EnvironmentForPackage(pkg.Env, b.sysroot, b.builderCfg.MakeJobs)
-	if needsRebuild {
-		info, _ := b.cache.Read(pkg.Name)
-		if info != nil && info.URL != pkg.URL {
-			b.Info("  URL changed for %s, cleaning old build", pkg.Name)
-			if !b.builderCfg.DryRun {
-				if err := b.cache.Clean(pkg.Name); err != nil {
-					return fmt.Errorf("failed to clean info for %s: %w", pkg.Name, err)
-				}
-			} else {
-				b.Info("Would clean old build for %s due to URL change", pkg.Name)
-			}
-		}
-
-		if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
-			if !b.builderCfg.DryRun {
-				b.Info("  Downloading %s...", pkg.Name)
-				if err := b.downloader.Download(ctx, pkg.Name, pkg.URL); err != nil {
-					b.recordResult(pkg.Name, false, err, "")
-					return fmt.Errorf("failed to download %s: %w", pkg.Name, err)
-				}
-				if err := b.downloader.Extract(pkg.Name, pkg.URL); err != nil {
-					b.recordResult(pkg.Name, false, err, "")
-					return fmt.Errorf("failed to extract %s: %w", pkg.Name, err)
-				}
-			} else {
-				b.Info("  [DRY RUN] Would download and extract %s", pkg.Name)
-			}
-		}
-
-		b.Info("  Compiling %s...", pkg.Name)
-		b.Debug("=== Build environment for %s ===", pkg.Name)
-		logEnvironment(pkgEnv.ToSlice())
-		buildScript := b.envManager.Subst(pkg.Build)
-		if !b.builderCfg.DryRun {
-			buildOutputTmp, err := b.runScript(pkg.Name, buildScript, pkgEnv.ToSlice())
-			if err != nil {
-				b.recordResult(pkg.Name, false, err, buildOutputTmp)
-				return fmt.Errorf("failed to build %s: %w", pkg.Name, err)
-			}
-			buildOutput = buildOutputTmp
-			if err := b.cache.WriteBuild(pkg.Name, b.sysroot, b.host, pkg); err != nil {
-				b.Warn("failed to write build info for %s: %v", pkg.Name, err)
-			}
-
-			if err := b.cache.InvalidateDependents(pkg.Name, b.config); err != nil {
-				b.Warn("failed to invalidate dependents for %s: %v", pkg.Name, err)
-			}
-		} else {
-			b.Info("  [DRY RUN] Would run build commands:")
-			for _, line := range strings.Split(buildScript, "\n") {
-				if strings.TrimSpace(line) != "" {
-					b.Info("    %s", line)
-				}
-			}
-			b.rebuiltMutex.Lock()
-			b.rebuiltPackages[pkg.Name] = true
-			b.rebuiltMutex.Unlock()
-		}
-	} else {
-		b.Info("  %s is already built, reinstalling to new sysroot...", pkg.Name)
-	}
-
-	b.Info("  Installing %s...", pkg.Name)
-	b.Debug("=== Install environment for %s ===", pkg.Name)
-	logEnvironment(pkgEnv.ToSlice())
-	installScript := b.envManager.Subst(pkg.Install)
-	if !b.builderCfg.DryRun {
-		installOutput, err = b.runScript(pkg.Name, installScript, pkgEnv.ToSlice())
-		if err != nil {
-			b.recordResult(pkg.Name, false, err, buildOutput+"\n"+installOutput)
-			return fmt.Errorf("failed to install %s: %w", pkg.Name, err)
-		}
-
-		if err := b.cache.WriteInstall(pkg.Name, b.sysroot, b.host, pkg); err != nil {
-			b.Warn("failed to write install cache for %s: %v", pkg.Name, err)
-		}
-	} else {
-		b.Info("  [DRY RUN] Would run install commands:")
-		for _, line := range strings.Split(installScript, "\n") {
-			if strings.TrimSpace(line) != "" {
-				b.Info("    %s", line)
-			}
-		}
-	}
-
-	fullOutput := buildOutput + "\n" + installOutput
-	b.recordResult(pkg.Name, true, nil, fullOutput)
-	b.Info("  %s built successfully", pkg.Name)
-	return nil
-}
-
-func (b *Builder) runScript(pkgName, script string, env []string) (string, error) {
-	sourceDir := filepath.Join(b.buildDir, pkgName, "source")
-
-	b.Debug("Running script in directory: %s", sourceDir)
-	b.Debug("Script content:\n%s", script)
-
-	cmd := exec.Command("bash", "-c", script)
-	cmd.Dir = sourceDir
-	cmd.Env = env
-
-	var outputBuf bytes.Buffer
-	var combinedOutput io.Writer = &outputBuf
-
-	if !b.builderCfg.Quiet {
-		combinedOutput = io.MultiWriter(&outputBuf, os.Stdout)
-	}
-
-	cmd.Stdout = combinedOutput
-	cmd.Stderr = combinedOutput
-
-	b.Debug("Executing command: bash -c <script>")
-	err := cmd.Run()
-	if err != nil {
-		b.Debug("Command failed with error: %v", err)
-	} else {
-		b.Debug("Command completed successfully")
-	}
-	return outputBuf.String(), err
-}
-
-func (b *Builder) recordResult(pkgName string, success bool, err error, output string) {
-	b.resultsMutex.Lock()
-	defer b.resultsMutex.Unlock()
-
-	b.results = append(b.results, Result{
-		Package: pkgName,
-		Success: success,
-		Error:   err,
-		Output:  output,
-	})
-}
-
-func (b *Builder) stop() {
-	b.stoppedMutex.Lock()
-	defer b.stoppedMutex.Unlock()
-
-	if !b.stopped {
-		b.stopped = true
-		close(b.stopChan)
-	}
-}
-
-func (b *Builder) isStopped() bool {
-	b.stoppedMutex.Lock()
-	defer b.stoppedMutex.Unlock()
-	return b.stopped
-}
-
-func (b *Builder) addDependenciesToFilter(pkgName string, filterSet map[string]bool) {
-	pkg := b.config.GetPackageByName(pkgName)
-	if pkg == nil {
-		return
-	}
-
-	for _, dep := range pkg.DependsOn {
-		if !filterSet[dep] {
-			filterSet[dep] = true
-			b.addDependenciesToFilter(dep, filterSet)
-		}
-	}
-}
-
-func (b *Builder) filterPackages(packages []string, filterSet map[string]bool) []string {
-	filtered := make([]string, 0, len(packages))
-	for _, pkgName := range packages {
-		if filterSet[pkgName] {
-			filtered = append(filtered, pkgName)
-		}
-	}
-	return filtered
-}
-
-func (b *Builder) buildRequiredByMap(filterSet map[string]bool) {
-	for _, pkg := range b.config.Packages {
-		if len(filterSet) > 0 && !filterSet[pkg.Name] {
-			continue
-		}
-
-		for _, dep := range pkg.DependsOn {
-			if len(filterSet) == 0 || filterSet[dep] {
-				b.requiredBy[dep] = append(b.requiredBy[dep], pkg.Name)
-			}
-		}
-	}
 }
 
 // Clean cleans all packages or the specified packages.
@@ -539,6 +273,265 @@ func (b *Builder) PrintSummary() {
 	b.Info("%s", separator)
 	b.Info("Total: %d | Success: %d | Failed: %d", len(b.results), successCount, failCount)
 	b.Info("%s", separator)
+}
+
+func (b *Builder) buildLevel(ctx context.Context, packageNames []string) error {
+	pool := NewWorkerPool(b.builderCfg.MaxConcurrency)
+	errors := make([]error, 0)
+	var errorsMutex sync.Mutex
+
+	for _, pkgName := range packageNames {
+		if b.isStopped() {
+			break
+		}
+
+		name := pkgName
+		pool.SubmitWithStop(func() {
+			if b.isStopped() {
+				return
+			}
+
+			pkg := b.config.GetPackageByName(name)
+			if pkg == nil {
+				errorsMutex.Lock()
+				errors = append(errors, fmt.Errorf("package %s not found", name))
+				errorsMutex.Unlock()
+				if b.builderCfg.FailFast {
+					b.stop()
+				}
+				return
+			}
+
+			if err := b.buildPackage(ctx, pkg); err != nil {
+				errorsMutex.Lock()
+				errors = append(errors, err)
+				errorsMutex.Unlock()
+				if b.builderCfg.FailFast {
+					b.stop()
+				}
+			}
+		}, b.stopChan)
+	}
+
+	pool.Wait()
+
+	if len(errors) > 0 {
+		return fmt.Errorf("build errors: %v", errors)
+	}
+	return nil
+}
+
+func (b *Builder) buildPackage(ctx context.Context, pkg *config.Package) error {
+	requiredBy := b.requiredBy[pkg.Name]
+	b.Info("Building %s%s...", pkg.Name, formatRequiredBy(requiredBy))
+
+	needsRebuild, err := b.cache.NeedsRebuild(pkg, b.sysroot, b.host)
+	if err != nil {
+		return fmt.Errorf("failed to check cache for %s: %w", pkg.Name, err)
+	}
+
+	needsReinstall := b.builderCfg.AlwaysInstall
+	if !needsReinstall {
+		needsReinstall, err = b.cache.NeedsReinstall(pkg, b.sysroot, b.host)
+		if err != nil {
+			return fmt.Errorf("failed to check reinstall cache for %s: %w", pkg.Name, err)
+		}
+	}
+
+	if !needsRebuild && !needsReinstall {
+		b.Info("  %s is up to date, skipping", pkg.Name)
+		b.recordResult(pkg.Name, true, nil, "")
+		return nil
+	}
+
+	var buildOutput string
+	var installOutput string
+	sourceDir := filepath.Join(b.buildDir, pkg.Name, "source")
+
+	pkgEnv := b.envManager.EnvironmentForPackage(pkg.Env, b.sysroot, b.builderCfg.MakeJobs)
+	if needsRebuild {
+		info, _ := b.cache.Read(pkg.Name)
+		if info != nil && info.URL != pkg.URL {
+			b.Info("  URL changed for %s, cleaning old build", pkg.Name)
+			if !b.builderCfg.DryRun {
+				if err := b.cache.Clean(pkg.Name); err != nil {
+					return fmt.Errorf("failed to clean info for %s: %w", pkg.Name, err)
+				}
+			} else {
+				b.Info("Would clean old build for %s due to URL change", pkg.Name)
+			}
+		}
+
+		if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
+			if !b.builderCfg.DryRun {
+				b.Info("  Downloading %s...", pkg.Name)
+				if err := b.downloader.Download(ctx, pkg.Name, pkg.URL); err != nil {
+					b.recordResult(pkg.Name, false, err, "")
+					return fmt.Errorf("failed to download %s: %w", pkg.Name, err)
+				}
+				if err := b.downloader.Extract(pkg.Name, pkg.URL); err != nil {
+					b.recordResult(pkg.Name, false, err, "")
+					return fmt.Errorf("failed to extract %s: %w", pkg.Name, err)
+				}
+			} else {
+				b.Info("  [DRY RUN] Would download and extract %s", pkg.Name)
+			}
+		}
+
+		b.Info("  Compiling %s...", pkg.Name)
+		b.Debug("=== Build environment for %s ===", pkg.Name)
+		logEnvironment(pkgEnv.ToSlice())
+		if !b.builderCfg.DryRun {
+			buildOutputTmp, err := b.runScript(pkg.Name, pkg.Build, pkgEnv.ToSlice())
+			if err != nil {
+				b.recordResult(pkg.Name, false, err, buildOutputTmp)
+				return fmt.Errorf("failed to build %s: %w", pkg.Name, err)
+			}
+			buildOutput = buildOutputTmp
+			if err := b.cache.WriteBuild(pkg.Name, b.sysroot, b.host, pkg); err != nil {
+				b.Warn("failed to write build info for %s: %v", pkg.Name, err)
+			}
+
+			if err := b.cache.InvalidateDependents(pkg.Name, b.config); err != nil {
+				b.Warn("failed to invalidate dependents for %s: %v", pkg.Name, err)
+			}
+		} else {
+			b.Info("  [DRY RUN] Would run build commands:")
+			for _, line := range strings.Split(pkg.Build, "\n") {
+				if strings.TrimSpace(line) != "" {
+					b.Info("    %s", line)
+				}
+			}
+			b.rebuiltMutex.Lock()
+			b.rebuiltPackages[pkg.Name] = true
+			b.rebuiltMutex.Unlock()
+		}
+	} else {
+		b.Info("  %s is already built, reinstalling to new sysroot...", pkg.Name)
+	}
+
+	b.Info("  Installing %s...", pkg.Name)
+	b.Debug("=== Install environment for %s ===", pkg.Name)
+	logEnvironment(pkgEnv.ToSlice())
+	if !b.builderCfg.DryRun {
+		installOutput, err = b.runScript(pkg.Name, pkg.Install, pkgEnv.ToSlice())
+		if err != nil {
+			b.recordResult(pkg.Name, false, err, buildOutput+"\n"+installOutput)
+			return fmt.Errorf("failed to install %s: %w", pkg.Name, err)
+		}
+
+		if err := b.cache.WriteInstall(pkg.Name, b.sysroot, b.host, pkg); err != nil {
+			b.Warn("failed to write install cache for %s: %v", pkg.Name, err)
+		}
+	} else {
+		b.Info("  [DRY RUN] Would run install commands:")
+		for _, line := range strings.Split(pkg.Install, "\n") {
+			if strings.TrimSpace(line) != "" {
+				b.Info("    %s", line)
+			}
+		}
+	}
+
+	fullOutput := buildOutput + "\n" + installOutput
+	b.recordResult(pkg.Name, true, nil, fullOutput)
+	b.Info("  %s built successfully", pkg.Name)
+	return nil
+}
+
+func (b *Builder) runScript(pkgName, script string, env []string) (string, error) {
+	sourceDir := filepath.Join(b.buildDir, pkgName, "source")
+
+	b.Debug("Running script in directory: %s", sourceDir)
+	b.Debug("Script content:\n%s", script)
+
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = sourceDir
+	cmd.Env = env
+
+	var outputBuf bytes.Buffer
+	var combinedOutput io.Writer = &outputBuf
+
+	if !b.builderCfg.Quiet {
+		combinedOutput = io.MultiWriter(&outputBuf, os.Stdout)
+	}
+
+	cmd.Stdout = combinedOutput
+	cmd.Stderr = combinedOutput
+
+	b.Debug("Executing command: bash -c <script>")
+	err := cmd.Run()
+	if err != nil {
+		b.Debug("Command failed with error: %v", err)
+	} else {
+		b.Debug("Command completed successfully")
+	}
+	return outputBuf.String(), err
+}
+
+func (b *Builder) recordResult(pkgName string, success bool, err error, output string) {
+	b.resultsMutex.Lock()
+	defer b.resultsMutex.Unlock()
+
+	b.results = append(b.results, Result{
+		Package: pkgName,
+		Success: success,
+		Error:   err,
+		Output:  output,
+	})
+}
+
+func (b *Builder) stop() {
+	b.stoppedMutex.Lock()
+	defer b.stoppedMutex.Unlock()
+
+	if !b.stopped {
+		b.stopped = true
+		close(b.stopChan)
+	}
+}
+
+func (b *Builder) isStopped() bool {
+	b.stoppedMutex.Lock()
+	defer b.stoppedMutex.Unlock()
+	return b.stopped
+}
+
+func (b *Builder) addDependenciesToFilter(pkgName string, filterSet map[string]bool) {
+	pkg := b.config.GetPackageByName(pkgName)
+	if pkg == nil {
+		return
+	}
+
+	for _, dep := range pkg.DependsOn {
+		if !filterSet[dep] {
+			filterSet[dep] = true
+			b.addDependenciesToFilter(dep, filterSet)
+		}
+	}
+}
+
+func (b *Builder) filterPackages(packages []string, filterSet map[string]bool) []string {
+	filtered := make([]string, 0, len(packages))
+	for _, pkgName := range packages {
+		if filterSet[pkgName] {
+			filtered = append(filtered, pkgName)
+		}
+	}
+	return filtered
+}
+
+func (b *Builder) buildRequiredByMap(filterSet map[string]bool) {
+	for _, pkg := range b.config.Packages {
+		if len(filterSet) > 0 && !filterSet[pkg.Name] {
+			continue
+		}
+
+		for _, dep := range pkg.DependsOn {
+			if len(filterSet) == 0 || filterSet[dep] {
+				b.requiredBy[dep] = append(b.requiredBy[dep], pkg.Name)
+			}
+		}
+	}
 }
 
 func formatRequiredBy(requiredBy []string) string {

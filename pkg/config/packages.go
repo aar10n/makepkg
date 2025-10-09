@@ -9,18 +9,36 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 
+	"github.com/aar10n/makepkg/pkg/env"
 	"github.com/aar10n/makepkg/pkg/logger"
 )
 
 // Package represents a single package definition.
 type Package struct {
-	Name      string   `yaml:"name" toml:"name"`
-	URL       string   `yaml:"url" toml:"url"`
-	Build     string   `yaml:"build" toml:"build"`
-	Install   string   `yaml:"install" toml:"install"`
-	Clean     string   `yaml:"clean,omitempty" toml:"clean,omitempty"`
-	Env       []string `yaml:"env,omitempty" toml:"env,omitempty"`
-	DependsOn []string `yaml:"depends_on,omitempty" toml:"depends_on,omitempty"`
+	Name         string   `yaml:"name" toml:"name"`
+	URL          string   `yaml:"url" toml:"url"`
+	Build        string   `yaml:"build" toml:"build"`
+	Install      string   `yaml:"install" toml:"install"`
+	Clean        string   `yaml:"clean,omitempty" toml:"clean,omitempty"`
+	Env          []string `yaml:"env,omitempty" toml:"env,omitempty"`
+	DependsOn    []string `yaml:"depends_on,omitempty" toml:"depends_on,omitempty"`
+	PackagesFile string   `yaml:"-" toml:"-"`
+}
+
+func (p *Package) Subst(env env.Env) {
+	env = env.Clone()
+	env.Set("PKG_NAME", p.Name)
+	env.Set("PKG_URL", p.URL)
+	env.Set("FILE_DIR", filepath.Dir(p.PackagesFile))
+
+	p.URL = env.Subst(p.URL)
+	p.Build = env.Subst(p.Build)
+	p.Install = env.Subst(p.Install)
+	p.Clean = env.Subst(p.Clean)
+
+	for i, e := range p.Env {
+		p.Env[i] = env.Subst(e)
+	}
 }
 
 // Config represents the overall package configuration file.
@@ -182,7 +200,15 @@ func LoadConfig(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("unsupported config type: %s", filepath.Ext(configPath))
 	}
 
+	configPath, err = filepath.Abs(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve config file path: %w", err)
+	}
+
 	config.FilePath = configPath
+	for i := range config.Packages {
+		config.Packages[i].PackagesFile = configPath
+	}
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}

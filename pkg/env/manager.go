@@ -19,6 +19,7 @@ type Env interface {
 	Subst(s string) string
 	SubstWarnUndefined(s string) (string, []string)
 	ToSlice() []string
+	Clone() Env
 }
 
 type Package interface {
@@ -98,7 +99,7 @@ func (e *Manager) ToSlice() []string {
 	return result
 }
 
-func (e *Manager) Clone() *Manager {
+func (e *Manager) Clone() Env {
 	clone := &Manager{
 		baseEnv: make(map[string]string, len(e.baseEnv)),
 	}
@@ -109,7 +110,7 @@ func (e *Manager) Clone() *Manager {
 }
 
 // EnvironmentForPackage prepares environment variables for building and installing a package.
-func (e *Manager) EnvironmentForPackage(pkgEnv []string, sysroot string, makeJobs int) *Manager {
+func (e *Manager) EnvironmentForPackage(pkgEnv []string, sysroot string, makeJobs int) Env {
 	env := e.Clone()
 
 	if makeJobs > 0 {
