@@ -16,8 +16,11 @@
 .Op Fl a Ar arch
 .Op Fl h Ar host
 .Op Fl j Ar N
-.Op Fl qFnv
+.Op Fl m Ar N
+.Op Fl qFnvBI
 .Op Fl -clean
+.Op Fl -list
+.Op Fl -version
 .Op Ar package ...
 .Sh DESCRIPTION
 The
@@ -105,6 +108,15 @@ Set the maximum concurrency to
 for building packages.
 Defaults to 1 (sequential builds).
 Packages at the same dependency level are built concurrently up to this limit.
+.It Fl m Ar N , Fl -make-jobs Ar N
+Set the number of jobs to
+.Ar N
+for each make invocation.
+Defaults to 1.
+This value is exported as
+.Ev MAKEFLAGS
+in the format
+.Ql -jN .
 .It Fl q , Fl -quiet
 Do not log build output to standard output.
 Only informational messages and the build summary are displayed.
@@ -121,6 +133,16 @@ Shows which packages would be downloaded, built, or skipped based on cache state
 Enable verbose debug logging.
 Shows detailed information about environment variable substitution,
 toolchain configuration, and build environment setup.
+.It Fl B , Fl -always-make
+Clean then build packages, forcing a complete rebuild.
+This is equivalent to running
+.Nm
+with
+.Fl -clean
+followed by a normal build.
+.It Fl I , Fl -always-install
+Always reinstall packages, ignoring cache state.
+Even if a package is up to date, it will be reinstalled to the sysroot.
 .It Fl -clean
 Clean package builds instead of building them.
 For each package,
@@ -129,6 +151,11 @@ attempts to run the package's custom clean script if specified,
 falls back to
 .Ql make clean ,
 or removes the source directory entirely.
+.It Fl -list
+List all package names from the configuration file and exit.
+Useful for scripting and automation.
+.It Fl V , Fl -version
+Show version information and exit.
 .El
 .Sh ARGUMENTS
 If one or more
@@ -219,7 +246,7 @@ cross_prefix = "x86_64-linux-musl-"
 name = "zlib"
 url = "https://zlib.net/zlib-1.3.tar.gz"
 build = """
-./configure --prefix=/usr
+\&./configure --prefix=/usr
 make -j$(nproc)
 """
 install = """
@@ -232,7 +259,7 @@ url = "https://www.openssl.org/source/openssl-3.0.0.tar.gz"
 depends_on = ["zlib"]
 env = ["CFLAGS=-O2 -g"]
 build = """
-./config --prefix=/usr --openssldir=/etc/ssl
+\&./config --prefix=/usr --openssldir=/etc/ssl
 make -j$(nproc)
 """
 install = """
@@ -331,9 +358,16 @@ supports environment variable substitution using the
 syntax in most package and toolchain configuration fields.
 This is similar to shell variable expansion but uses a dedicated substitution
 engine separate from the shell scripts.
+Variables are expanded using
+.Xr envsubst 1 Ns -like
+syntax.
 .Pp
 The following fields support variable substitution:
 .Bl -bullet -compact
+.It
+Package
+.Sy url
+field
 .It
 Package
 .Sy build ,
@@ -352,6 +386,28 @@ Toolchain
 .Sy bin ,
 and
 .Sy cross_prefix
+.It
+Toolchain
+.Sy extra_programs
+entries
+.El
+.Pp
+During package configuration substitution, the following special variables are
+automatically provided:
+.Bl -tag -width "FILE_DIR"
+.It Ev PKG_NAME
+The name of the current package being processed.
+.It Ev PKG_URL
+The URL of the current package (before substitution).
+.It Ev FILE_DIR
+The absolute path to the directory containing the package configuration file.
+Useful for referencing local resources or scripts relative to the configuration.
+.El
+.Pp
+During toolchain configuration substitution:
+.Bl -tag -width "FILE_DIR"
+.It Ev FILE_DIR
+The absolute path to the directory containing the toolchain configuration file.
 .El
 .Pp
 Variables are expanded before scripts are executed and before the build
@@ -409,13 +465,22 @@ Absolute path to the build directory.
 .It Ev SYS_ROOT
 Absolute path to the sysroot directory (if specified via
 .Fl s ) .
+This variable is always set, defaulting to
+.Pa /
+if no sysroot is specified.
 .It Ev INSTALL_ROOT
-Absolute path to the installation root.
-Equal to
-.Ev SYS_ROOT
-if specified, otherwise
-.Pa / .
-Available during the install script only.
+Alias for
+.Ev SYS_ROOT .
+Provided for compatibility with packages that expect this variable name.
+.It Ev MAKEFLAGS
+Set to
+.Ql -jN
+where
+.Ar N
+is the value of the
+.Fl m
+flag.
+Controls parallelism for make-based builds.
 .El
 .Ss Toolchain Variables
 .Bl -tag -width "CROSS_PREFIX"
@@ -430,8 +495,9 @@ Variable names follow the pattern described in
 When a sysroot is specified, the following variables are configured:
 .Bl -tag -width "PKG_CONFIG_SYSROOT_DIR"
 .It Ev PKG_CONFIG_PATH
-Set to
-.Pa ${SYS_ROOT}/usr/lib/pkgconfig:${SYS_ROOT}/usr/share/pkgconfig .
+Prepended with
+.Pa ${SYS_ROOT}/usr/lib/pkgconfig
+to ensure pkg-config finds libraries installed in the sysroot.
 .It Ev PKG_CONFIG_SYSROOT_DIR
 Set to
 .Ev SYS_ROOT .
@@ -544,9 +610,9 @@ Build with verbose logging for debugging:
 $ makepkg -v -s /tmp/sysroot
 .Ed
 .Sh SEE ALSO
+.Xr bash 1 ,
 .Xr make 1 ,
-.Xr pkg-config 1 ,
-.Xr bash 1
+.Xr pkg-config 1
 .Sh HISTORY
 The
 .Nm
