@@ -37,6 +37,7 @@ func main() {
 	failFast := pflag.BoolP("fail-fast", "F", false, "Stop building immediately on first error")
 	dryRun := pflag.BoolP("dry-run", "n", false, "Print what would be done without actually building")
 	verbose := pflag.BoolP("verbose", "v", false, "Enable verbose debug logging")
+	list := pflag.Bool("list", false, "List all package names from the configuration")
 	clean := pflag.Bool("clean", false, "Clean package builds instead of building them")
 	alwaysMake := pflag.BoolP("always-make", "B", false, "Clean then build packages (force rebuild)")
 	alwaysInstall := pflag.BoolP("always-install", "I", false, "Always reinstall packages ignoring cache")
@@ -114,6 +115,13 @@ func main() {
 
 	if toolchainCfg != nil {
 		cfg.Toolchain = config.MergeToolchainConfig(&cfg.Toolchain, toolchainCfg)
+	}
+
+	if *list {
+		for _, pkg := range cfg.Packages {
+			fmt.Println(pkg.Name)
+		}
+		os.Exit(0)
 	}
 
 	if *sysroot == "" {

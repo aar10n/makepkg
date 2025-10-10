@@ -1,0 +1,41 @@
+#compdef makepkg
+
+# Helper function to extract package names from config file
+_makepkg_packages() {
+    local packages
+
+    # Call makepkg --list to get package names
+    packages=(${(f)"$(makepkg --list 2>/dev/null)"})
+
+    if [[ ${#packages} -gt 0 ]]; then
+        _describe 'package' packages
+    fi
+}
+
+# Main completion function
+_makepkg() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    _arguments -C \
+        '(-f --file)'{-f,--file}'[Read FILE as the package configuration file]:config file:_files -g "*.{yaml,yml,toml}"' \
+        '(-t --toolchain)'{-t,--toolchain}'[Read FILE as the toolchain configuration file]:toolchain file:_files -g "*.{yaml,yml,toml}"' \
+        '(-s --sysroot)'{-s,--sysroot}'[Path to use as the sysroot]:sysroot path:_directories' \
+        '(-b --builddir)'{-b,--builddir}'[Directory where packages should be built]:build directory:_directories' \
+        '(-a --arch)'{-a,--arch}'[Target ARCH to build for]:architecture:(x86_64 aarch64 arm i686)' \
+        '(-h --host)'{-h,--host}'[Target HOST to build for]:host:(x86_64-linux-musl aarch64-linux-musl arm-linux-musleabi armv7-linux-musleabihf i686-linux-musl)' \
+        '(-j --jobs)'{-j,--jobs}'[Maximum concurrency for building packages]:jobs:' \
+        '(-m --make-jobs)'{-m,--make-jobs}'[Number of jobs for each make invocation]:make jobs:' \
+        '(-q --quiet)'{-q,--quiet}'[Do not log build output, only info and summary]' \
+        '(-F --fail-fast)'{-F,--fail-fast}'[Stop building immediately on first error]' \
+        '(-n --dry-run)'{-n,--dry-run}'[Print what would be done without actually building]' \
+        '(-v --verbose)'{-v,--verbose}'[Enable verbose debug logging]' \
+        '--list[List all package names from the configuration]' \
+        '--clean[Clean package builds instead of building them]' \
+        '(-B --always-make)'{-B,--always-make}'[Clean then build packages (force rebuild)]' \
+        '(-I --always-install)'{-I,--always-install}'[Always reinstall packages ignoring cache]' \
+        '(-V --version)'{-V,--version}'[Show version information]' \
+        '*::package:_makepkg_packages'
+}
+
+_makepkg "$@"
