@@ -8,7 +8,7 @@ before:
 
 builds:
   - id: makepkg
-    main: ./main.go
+    main: .
     binary: makepkg
     env:
       - CGO_ENABLED=0
