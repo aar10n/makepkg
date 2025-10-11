@@ -2,6 +2,7 @@ package env
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -34,13 +35,8 @@ func NewManager() *Manager {
 		baseEnv: make(map[string]string),
 	}
 
-	//for _, e := range os.Environ() {
-	//	parts := strings.SplitN(e, "=", 2)
-	//	if len(parts) == 2 {
-	//		env.baseEnv[parts[0]] = parts[1]
-	//	}
-	//}
-
+	path := os.Getenv("PATH")
+	env.baseEnv["PATH"] = path
 	return env
 }
 
