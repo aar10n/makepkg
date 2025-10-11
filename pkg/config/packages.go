@@ -17,6 +17,7 @@ import (
 type Package struct {
 	Name         string   `yaml:"name" toml:"name"`
 	URL          string   `yaml:"url" toml:"url"`
+	Native       bool     `yaml:"native,omitempty" toml:"native,omitempty"`
 	Build        string   `yaml:"build" toml:"build"`
 	Install      string   `yaml:"install" toml:"install"`
 	Clean        string   `yaml:"clean,omitempty" toml:"clean,omitempty"`

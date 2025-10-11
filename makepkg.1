@@ -34,9 +34,6 @@ reads package definitions from a YAML or TOML configuration file, resolves
 dependencies, and builds packages in the correct order.
 Each package can specify build scripts, installation scripts, and dependencies
 on other packages.
-The system supports environment variable substitution using
-.Sy ${VAR}
-syntax in most package and toolchain configuration fields.
 .Pp
 If no configuration file is specified,
 .Nm
@@ -128,7 +125,8 @@ By default,
 continues building other packages after a failure.
 .It Fl n , Fl -dry-run
 Print what would be done without actually building packages.
-Shows which packages would be downloaded, built, or skipped based on cache state.
+Shows which packages would be downloaded, built, or skipped based on
+cache state.
 .It Fl v , Fl -verbose
 Enable verbose debug logging.
 Shows detailed information about environment variable substitution,
@@ -153,16 +151,17 @@ falls back to
 or removes the source directory entirely.
 .It Fl -list
 List all package names from the configuration file and exit.
-Useful for scripting and automation.
 .It Fl V , Fl -version
 Show version information and exit.
 .El
 .Sh ARGUMENTS
 If one or more
 .Ar package
-arguments are specified, only those packages (and their dependencies) are built.
+arguments are specified, only those packages (and their dependencies)
+are built.
 All package names must be defined in the configuration file.
-If no packages are specified, all packages defined in the configuration are built.
+If no packages are specified, all packages defined in the configuration
+are built.
 .Sh PACKAGE CONFIGURATION FORMAT
 The package configuration file may be written in YAML or TOML format.
 The format is determined by the file extension
@@ -191,12 +190,17 @@ Shell script to install the package
 .Pp
 Optional package fields:
 .Bl -tag -width "depends_on" -compact
+.It Sy native
+Boolean flag indicating if this is a native build.
+When true, toolchain environment variables are not added to the build
+environment.
+Defaults to false.
 .It Sy clean
 Custom shell script for cleaning the package
 .It Sy env
 Array of environment variables in
 .Ql NAME=VALUE
-format
+format. May reference other make
 .It Sy depends_on
 Array of package names this package depends on
 .El
@@ -214,59 +218,39 @@ packages:
   - name: zlib
     url: https://zlib.net/zlib-1.3.tar.gz
     build: |
-      ./configure --prefix=/usr
-      make -j$(nproc)
+      mkpkg::configure
+      make
     install: |
-      make install DESTDIR=${INSTALL_ROOT}
+      mkpkg::make_install
+
+  - name: build-tools
+    url: https://example.com/tools-1.0.tar.gz
+    native: true
+    build: |
+      # Native build - toolchain vars not set
+      ./configure --prefix=/usr
+      make
+    install: |
+      mkpkg::make_install
+      mkpkg::write_artifact mytool
 
   - name: openssl
     url: https://www.openssl.org/source/openssl-3.0.0.tar.gz
     depends_on:
       - zlib
+      - build-tools
     env:
       - CFLAGS=-O2 -g
     build: |
+      mkpkg::get_artifact build-tools mytool
       ./config --prefix=/usr --openssldir=/etc/ssl
-      make -j$(nproc)
+      make
     install: |
-      make install DESTDIR=${INSTALL_ROOT}
+      mkpkg::make_install
     clean: |
       make distclean
 .Ed
-.Pp
-Example TOML configuration:
-.Bd -literal -offset indent
-[toolchain]
-arch = "x86_64"
-host = "x86_64-linux-musl"
-bin = "/opt/cross/bin"
-cross_prefix = "x86_64-linux-musl-"
 
-[[packages]]
-name = "zlib"
-url = "https://zlib.net/zlib-1.3.tar.gz"
-build = """
-\&./configure --prefix=/usr
-make -j$(nproc)
-"""
-install = """
-make install DESTDIR=${INSTALL_ROOT}
-"""
-
-[[packages]]
-name = "openssl"
-url = "https://www.openssl.org/source/openssl-3.0.0.tar.gz"
-depends_on = ["zlib"]
-env = ["CFLAGS=-O2 -g"]
-build = """
-\&./config --prefix=/usr --openssldir=/etc/ssl
-make -j$(nproc)
-"""
-install = """
-make install DESTDIR=${INSTALL_ROOT}
-"""
-clean = "make distclean"
-.Ed
 .Sh TOOLCHAIN CONFIGURATION
 Toolchain settings may be specified in the packages configuration file under
 the
@@ -347,9 +331,6 @@ arch: aarch64
 host: aarch64-linux-gnu
 bin: /usr/local/cross/bin
 cross_prefix: aarch64-linux-gnu-
-extra_programs:
-  - make
-  - cmake
 .Ed
 .Sh ENVIRONMENT VARIABLE SUBSTITUTION
 .Nm
@@ -401,7 +382,6 @@ The name of the current package being processed.
 The URL of the current package (before substitution).
 .It Ev FILE_DIR
 The absolute path to the directory containing the package configuration file.
-Useful for referencing local resources or scripts relative to the configuration.
 .El
 .Pp
 During toolchain configuration substitution:
@@ -449,7 +429,7 @@ The following environment variables are set by
 .Nm
 and made available to package build and install scripts:
 .Ss Core Variables
-.Bl -tag -width "INSTALL_ROOT"
+.Bl -tag -width "BUILD_ARTIFACTS"
 .It Ev PKGS_ROOT
 Absolute path to the directory containing the package configuration file.
 .It Ev PKGS_ARCH
@@ -472,6 +452,20 @@ if no sysroot is specified.
 Alias for
 .Ev SYS_ROOT .
 Provided for compatibility with packages that expect this variable name.
+.It Ev MAKEPKG
+The full command line to invoke
+.Nm
+with the same configuration.
+Used by helper functions like
+.Fn mkpkg::get_artifact
+to rebuild dependency packages when needed.
+.It Ev BUILD_ARTIFACTS
+Absolute path to the build artifacts directory at
+.Pa $BUILD_DIR/artifacts .
+Each package has its own subdirectory at
+.Pa $BUILD_ARTIFACTS/$PKG_NAME
+for storing inter-package build artifacts.
+Package-specific artifact directories are cleaned before each build.
 .It Ev MAKEFLAGS
 Set to
 .Ql -jN
@@ -515,13 +509,127 @@ Include
 and
 .Pa ${SYS_ROOT}/lib .
 .El
-.Ss Package-Specific Variables
+.Pp
 Environment variables specified in a package's
 .Sy env
 field are added to the build and install environment.
 Values in
 .Sy env
 undergo variable substitution before being set.
+.Sh PACKAGE SCRIPT FUNCTIONS
+.Nm
+provides a set of bash helper functions to package scripts to simplify
+common tasks.
+These functions are automatically available in all build, install, and
+clean scripts.
+.Ss Common Functions
+The following functions are available in all script types:
+.Bl -tag -width "mkpkg::replace_in_file"
+.It Fn mkpkg::info "message..."
+Print an informational message to standard output.
+.It Fn mkpkg::warn "message..."
+Print a warning message to standard error.
+.It Fn mkpkg::error "message..."
+Print an error message to standard error and exit with status 1.
+.It Fn mkpkg::has_command "command"
+Check if a command exists in
+.Ev PATH .
+Returns 0 if the command exists, non-zero otherwise.
+.It Fn mkpkg::apply_patch "patch_file"
+Apply a patch file using
+.Xr patch 1
+with
+.Fl p1 .
+Exits with an error if the patch file is not found or fails to apply.
+.It Fn mkpkg::replace_in_file "pattern" "replacement" "file"
+Replace all occurrences of a pattern with a replacement in a file using
+.Xr sed 1 .
+Creates a backup file with
+.Pa .bak
+extension.
+Exits with an error if the file is not found.
+.El
+.Ss Build Script Functions
+The following functions are available only in build scripts:
+.Bl -tag -width "mkpkg::configure"
+.It Fn mkpkg::configure "args..."
+Run a standard
+.Pa ./configure
+script with common cross-compilation arguments.
+Automatically passes
+.Fl -host=$PKGS_HOST
+and
+.Fl -prefix=/usr ,
+along with any additional arguments provided.
+Exits with an error if the configure script is not found.
+.El
+.Ss Install Script Functions
+The following functions are available only in install scripts:
+.Bl -tag -width "mkpkg::make_install"
+.It Fn mkpkg::make_install "args..."
+Run
+.Ql make install
+with
+.Ql DESTDIR=$SYS_ROOT
+and any additional arguments.
+This is the recommended way to install packages.
+.It Fn mkpkg::install_file "source" "dest" "mode"
+Install a single file to a specific location within the sysroot.
+The
+.Ar source
+is the path to the file in the build directory.
+The
+.Ar dest
+is the absolute path within the sysroot (e.g.,
+.Pa /usr/bin/program ) .
+The optional
+.Ar mode
+is the file permission mode (defaults to 0644).
+Creates parent directories as needed.
+Exits with an error if the source file is not found.
+.It Fn mkpkg::write_artifact "source" "dest"
+Copy a file to the current package's build artifact directory for use
+by other packages.
+The
+.Ar source
+is the path to the file in the build directory.
+The optional
+.Ar dest
+is the destination path within the artifact directory
+(defaults to the basename of the source file).
+Artifacts are stored at
+.Pa $BUILD_ARTIFACTS/$PKG_NAME/ .
+Package artifact directories are cleaned before each build.
+.It Fn mkpkg::get_artifact "package" "source" "dest"
+Copy a file from another package's build artifact directory.
+The
+.Ar package
+is the name of the package that created the artifact.
+The
+.Ar source
+is the path within that package's artifact directory.
+The optional
+.Ar dest
+is the destination path (defaults to the basename of the source).
+Exits with an error if the artifact still cannot be found after rebuilding.
+.El
+.Pp
+Example usage in install script:
+.Bd -literal -offset indent
+install: |
+  mkpkg::make_install
+  mkpkg::install_file config.h /usr/include/mylib/ 0644
+  mkpkg::write_artifact libmylib.a
+.Ed
+.Pp
+Example using artifacts from another package:
+.Bd -literal -offset indent
+install: |
+  mkpkg::get_artifact mylib libmylib.a
+  mkpkg::make_install
+depends_on:
+  - mylib
+.Ed
 .Sh CACHING AND REBUILDING
 .Nm
 maintains cache metadata in the build directory to avoid unnecessary rebuilds.
@@ -569,7 +677,8 @@ Within a single dependency level, packages may be built concurrently
 .Fl j
 flag).
 .Pp
-Circular dependencies are detected and reported as errors before any builds begin.
+Circular dependencies are detected and reported as errors before any
+builds begin.
 .Sh EXIT STATUS
 .Ex -std
 The
@@ -613,12 +722,8 @@ $ makepkg -v -s /tmp/sysroot
 .Xr bash 1 ,
 .Xr make 1 ,
 .Xr pkg-config 1
-.Sh HISTORY
-The
-.Nm
-utility was created in 2025.
 .Sh AUTHORS
-.An Aaron
+.An Aaron Gill-Braun
 .Sh BUGS
 Report bugs at:
 .Lk https://github.com/aar10n/makepkg

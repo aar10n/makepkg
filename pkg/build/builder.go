@@ -43,6 +43,7 @@ type Builder struct {
 	builderCfg BuilderConfig
 	config     *config.Config
 	envManager *env.Manager
+	toolEnv    env.Env
 	dryRun     bool
 	buildDir   string
 	sysroot    string
@@ -50,6 +51,7 @@ type Builder struct {
 
 	cache             cache.Cache
 	downloader        download.Downloader
+	buildArtifactsDir string
 	results           []Result
 	resultsMutex      sync.Mutex
 	stopChan          chan struct{}
@@ -62,15 +64,31 @@ type Builder struct {
 }
 
 // NewBuilder creates a new Builder instance.
-func NewBuilder(builderCfg BuilderConfig, cfg *config.Config, buildDir, sysroot, host string) (*Builder, error) {
+func NewBuilder(builderCfg BuilderConfig, cfg *config.Config, buildDir, sysroot, host, makepkgCmd string) (*Builder, error) {
 	envManager := env.NewManager()
 	envManager.Set("PKGS_ROOT", filepath.Dir(cfg.FilePath))
 	envManager.Set("PKGS_ARCH", cfg.Toolchain.Arch)
 	envManager.Set("BUILD_DIR", envManager.Subst(buildDir))
 	envManager.Set("SYS_ROOT", envManager.Subst(sysroot))
+	envManager.Set("MAKEPKG", makepkgCmd)
 	if host != "" {
 		envManager.Set("PKGS_HOST", envManager.Subst(host))
 	}
+
+	// Set up build artifacts directory
+	buildArtifactsDir := filepath.Join(buildDir, "artifacts")
+	if !builderCfg.DryRun {
+		if err := os.MkdirAll(buildArtifactsDir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create build artifacts directory: %w", err)
+		}
+	}
+	envManager.Set("BUILD_ARTIFACTS", buildArtifactsDir)
+
+	// Substitute toolchain variables before adding to environment
+	cfg.Toolchain.Subst(envManager)
+
+	toolEnv := env.NewManager()
+	cfg.Toolchain.AddToEnv(toolEnv)
 
 	cacheInst := cache.NewCache(buildDir)
 	downloader := download.NewDownloader(buildDir)
@@ -85,6 +103,7 @@ func NewBuilder(builderCfg BuilderConfig, cfg *config.Config, buildDir, sysroot,
 		builderCfg: builderCfg,
 		config:     cfg,
 		envManager: envManager,
+		toolEnv:    toolEnv,
 		dryRun:     builderCfg.DryRun,
 		buildDir:   buildDir,
 		sysroot:    sysroot,
@@ -92,6 +111,7 @@ func NewBuilder(builderCfg BuilderConfig, cfg *config.Config, buildDir, sysroot,
 
 		cache:             cacheInst,
 		downloader:        downloader,
+		buildArtifactsDir: buildArtifactsDir,
 		results:           nil,
 		stopChan:          make(chan struct{}),
 		stopped:           false,
@@ -105,12 +125,10 @@ func NewBuilder(builderCfg BuilderConfig, cfg *config.Config, buildDir, sysroot,
 // If packageFilter is non-empty, only builds the specified packages (and their dependencies).
 func (b *Builder) Build(ctx context.Context, packageFilter []string) error {
 	b.Info("Starting build process...")
-	b.config.Toolchain.Subst(b.envManager)
 	for i := range b.config.Packages {
 		b.config.Packages[i].Subst(b.envManager)
 	}
 
-	b.config.Toolchain.AddToEnv(b.envManager)
 	if !b.builderCfg.DryRun {
 		if err := os.MkdirAll(b.sysroot, 0o755); err != nil {
 			return fmt.Errorf("failed to create sysroot directory: %w", err)
@@ -194,48 +212,6 @@ func (b *Builder) Clean(packageFilter []string) error {
 	return nil
 }
 
-func (b *Builder) cleanPackage(pkg *config.Package) error {
-	b.Info("Cleaning %s...", pkg.Name)
-
-	sourceDir := filepath.Join(b.buildDir, pkg.Name, "source")
-
-	if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
-		b.Info("  No source directory found for %s, skipping", pkg.Name)
-		return nil
-	}
-
-	if pkg.Clean != "" {
-		b.Info("  Running custom clean script for %s...", pkg.Name)
-		cleanEnv := b.envManager.EnvironmentForPackage(pkg.Env, b.sysroot, b.builderCfg.MakeJobs)
-		_, err := b.runScript(pkg.Name, pkg.Clean, cleanEnv.ToSlice())
-		if err == nil {
-			b.cache.Invalidate(pkg.Name)
-			b.Info("  %s cleaned successfully", pkg.Name)
-			return nil
-		}
-		b.Warn("Custom clean script failed, trying make clean...")
-	}
-
-	b.Info("  Running 'make clean' for %s...", pkg.Name)
-	makeEnv := b.envManager.EnvironmentForPackage(pkg.Env, b.sysroot, b.builderCfg.MakeJobs)
-	_, err := b.runScript(pkg.Name, "make clean", makeEnv.ToSlice())
-	if err == nil {
-		b.cache.Invalidate(pkg.Name)
-		b.Info("  %s cleaned successfully", pkg.Name)
-		return nil
-	}
-	b.Warn("'make clean' failed, removing source directory...")
-
-	b.Info("  Removing source directory for %s...", pkg.Name)
-	if err := os.RemoveAll(sourceDir); err != nil {
-		return fmt.Errorf("failed to remove source directory: %w", err)
-	}
-
-	b.cache.Invalidate(pkg.Name)
-	b.Info("  %s cleaned successfully", pkg.Name)
-	return nil
-}
-
 // PrintSummary prints a summary of the build results.
 func (b *Builder) PrintSummary() {
 	separator := strings.Repeat("=", 60)
@@ -273,6 +249,47 @@ func (b *Builder) PrintSummary() {
 	b.Info("%s", separator)
 	b.Info("Total: %d | Success: %d | Failed: %d", len(b.results), successCount, failCount)
 	b.Info("%s", separator)
+}
+
+func (b *Builder) cleanPackage(pkg *config.Package) error {
+	b.Info("Cleaning %s...", pkg.Name)
+
+	sourceDir := filepath.Join(b.buildDir, pkg.Name, "source")
+
+	if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
+		b.Info("  No source directory found for %s, skipping", pkg.Name)
+		return nil
+	}
+
+	cleanEnv := b.envManager.EnvironmentForPackage(pkg.Name, pkg.Env, b.sysroot, b.builderCfg.MakeJobs)
+	if pkg.Clean != "" {
+		b.Info("  Running custom clean script for %s...", pkg.Name)
+		_, err := b.runScript(pkg.Name, ScriptTypeClean, pkg.Clean, cleanEnv.ToSlice())
+		if err == nil {
+			b.cache.Invalidate(pkg.Name)
+			b.Info("  %s cleaned successfully", pkg.Name)
+			return nil
+		}
+		b.Warn("Custom clean script failed, trying make clean...")
+	}
+
+	b.Info("  Running 'make clean' for %s...", pkg.Name)
+	_, err := b.runScript(pkg.Name, ScriptTypeClean, "make clean", cleanEnv.ToSlice())
+	if err == nil {
+		b.cache.Invalidate(pkg.Name)
+		b.Info("  %s cleaned successfully", pkg.Name)
+		return nil
+	}
+	b.Warn("'make clean' failed, removing source directory...")
+
+	b.Info("  Removing source directory for %s...", pkg.Name)
+	if err := os.RemoveAll(sourceDir); err != nil {
+		return fmt.Errorf("failed to remove source directory: %w", err)
+	}
+
+	b.cache.Invalidate(pkg.Name)
+	b.Info("  %s cleaned successfully", pkg.Name)
+	return nil
 }
 
 func (b *Builder) buildLevel(ctx context.Context, packageNames []string) error {
@@ -344,11 +361,28 @@ func (b *Builder) buildPackage(ctx context.Context, pkg *config.Package) error {
 		return nil
 	}
 
+	// Clean up package-specific build artifacts directory
+	pkgArtifactsDir := filepath.Join(b.buildArtifactsDir, pkg.Name)
+	if !b.builderCfg.DryRun {
+		if err := os.RemoveAll(pkgArtifactsDir); err != nil {
+			b.Warn("  Failed to clean artifacts for %s: %v", pkg.Name, err)
+		} else if _, err := os.Stat(pkgArtifactsDir); err == nil {
+			b.Debug("  Cleaned artifacts directory for %s", pkg.Name)
+		}
+
+		if err := os.MkdirAll(pkgArtifactsDir, 0755); err != nil {
+			b.Warn("  Failed to create artifacts directory for %s: %v", pkg.Name, err)
+		}
+	}
+
 	var buildOutput string
 	var installOutput string
 	sourceDir := filepath.Join(b.buildDir, pkg.Name, "source")
 
-	pkgEnv := b.envManager.EnvironmentForPackage(pkg.Env, b.sysroot, b.builderCfg.MakeJobs)
+	pkgEnv := b.envManager.EnvironmentForPackage(pkg.Name, pkg.Env, b.sysroot, b.builderCfg.MakeJobs)
+	if !pkg.Native {
+		b.toolEnv.AddToEnv(pkgEnv)
+	}
 	if needsRebuild {
 		info, _ := b.cache.Read(pkg.Name)
 		if info != nil && info.URL != pkg.URL {
@@ -382,7 +416,7 @@ func (b *Builder) buildPackage(ctx context.Context, pkg *config.Package) error {
 		b.Debug("=== Build environment for %s ===", pkg.Name)
 		logEnvironment(pkgEnv.ToSlice())
 		if !b.builderCfg.DryRun {
-			buildOutputTmp, err := b.runScript(pkg.Name, pkg.Build, pkgEnv.ToSlice())
+			buildOutputTmp, err := b.runScript(pkg.Name, ScriptTypeBuild, pkg.Build, pkgEnv.ToSlice())
 			if err != nil {
 				b.recordResult(pkg.Name, false, err, buildOutputTmp)
 				return fmt.Errorf("failed to build %s: %w", pkg.Name, err)
@@ -414,7 +448,7 @@ func (b *Builder) buildPackage(ctx context.Context, pkg *config.Package) error {
 	b.Debug("=== Install environment for %s ===", pkg.Name)
 	logEnvironment(pkgEnv.ToSlice())
 	if !b.builderCfg.DryRun {
-		installOutput, err = b.runScript(pkg.Name, pkg.Install, pkgEnv.ToSlice())
+		installOutput, err = b.runScript(pkg.Name, ScriptTypeInstall, pkg.Install, pkgEnv.ToSlice())
 		if err != nil {
 			b.recordResult(pkg.Name, false, err, buildOutput+"\n"+installOutput)
 			return fmt.Errorf("failed to install %s: %w", pkg.Name, err)
@@ -438,13 +472,13 @@ func (b *Builder) buildPackage(ctx context.Context, pkg *config.Package) error {
 	return nil
 }
 
-func (b *Builder) runScript(pkgName, script string, env []string) (string, error) {
+func (b *Builder) runScript(pkgName string, scriptType ScriptType, script string, env []string) (string, error) {
 	sourceDir := filepath.Join(b.buildDir, pkgName, "source")
-
 	b.Debug("Running script in directory: %s", sourceDir)
 	b.Debug("Script content:\n%s", script)
 
-	cmd := exec.Command("bash", "-c", script)
+	fullScript := GetScriptPreamble(scriptType) + script
+	cmd := exec.Command("bash", "-c", fullScript)
 	cmd.Dir = sourceDir
 	cmd.Env = env
 
@@ -553,6 +587,7 @@ func logEnvironment(env []string) {
 		"PKG_CONFIG_PATH", "PKG_CONFIG_SYSROOT_DIR",
 		"SYS_ROOT", "INSTALL_ROOT", "PKGS_HOST",
 		"LIBRARY_PATH", "LD_LIBRARY_PATH",
+		"BUILD_ARTIFACTS", "MAKEPKG",
 	}
 
 	envMap := make(map[string]string)

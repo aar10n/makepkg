@@ -2,7 +2,6 @@ package env
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -18,14 +17,10 @@ type Env interface {
 	PrependToVar(key, value, sep string)
 	Subst(s string) string
 	SubstWarnUndefined(s string) (string, []string)
+	AddToEnv(other Env)
+	EnvironmentForPackage(pkgName string, pkgEnv []string, sysroot string, makeJobs int) Env
 	ToSlice() []string
 	Clone() Env
-}
-
-type Package interface {
-	GetName() string
-	SubstURL() string
-	SubstEnv() []string
 }
 
 // Manager manages environment variables for package builds.
@@ -39,17 +34,18 @@ func NewManager() *Manager {
 		baseEnv: make(map[string]string),
 	}
 
-	for _, e := range os.Environ() {
-		parts := strings.SplitN(e, "=", 2)
-		if len(parts) == 2 {
-			env.baseEnv[parts[0]] = parts[1]
-		}
-	}
+	//for _, e := range os.Environ() {
+	//	parts := strings.SplitN(e, "=", 2)
+	//	if len(parts) == 2 {
+	//		env.baseEnv[parts[0]] = parts[1]
+	//	}
+	//}
 
 	return env
 }
 
 func (e *Manager) Set(key, value string) {
+	//value = e.Subst(value)
 	logger.Debug("Setting %s=%s", key, value)
 	e.baseEnv[key] = value
 }
@@ -91,27 +87,19 @@ func (e *Manager) SubstWarnUndefined(s string) (string, []string) {
 	return result, undefined
 }
 
-func (e *Manager) ToSlice() []string {
-	result := make([]string, 0, len(e.baseEnv))
-	for k, v := range e.baseEnv {
-		result = append(result, k+"="+v)
+func (m *Manager) AddToEnv(other Env) {
+	if other == nil {
+		return
 	}
-	return result
-}
-
-func (e *Manager) Clone() Env {
-	clone := &Manager{
-		baseEnv: make(map[string]string, len(e.baseEnv)),
+	for key, value := range m.baseEnv {
+		other.Set(key, value)
 	}
-	for k, v := range e.baseEnv {
-		clone.baseEnv[k] = v
-	}
-	return clone
 }
 
 // EnvironmentForPackage prepares environment variables for building and installing a package.
-func (e *Manager) EnvironmentForPackage(pkgEnv []string, sysroot string, makeJobs int) Env {
+func (e *Manager) EnvironmentForPackage(pkgName string, pkgEnv []string, sysroot string, makeJobs int) Env {
 	env := e.Clone()
+	env.Set("PKG_NAME", pkgName)
 
 	if makeJobs > 0 {
 		env.Set("MAKEFLAGS", fmt.Sprintf("-j%d", makeJobs))
@@ -148,4 +136,22 @@ func (e *Manager) EnvironmentForPackage(pkgEnv []string, sysroot string, makeJob
 		}
 	}
 	return env
+}
+
+func (e *Manager) ToSlice() []string {
+	result := make([]string, 0, len(e.baseEnv))
+	for k, v := range e.baseEnv {
+		result = append(result, k+"="+v)
+	}
+	return result
+}
+
+func (e *Manager) Clone() Env {
+	clone := &Manager{
+		baseEnv: make(map[string]string, len(e.baseEnv)),
+	}
+	for k, v := range e.baseEnv {
+		clone.baseEnv[k] = v
+	}
+	return clone
 }
