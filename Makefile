@@ -1,4 +1,4 @@
-.PHONY: build build-linux clean install docker-build docker-test docker-shell
+.PHONY: build build-linux clean install regenerate-readme docker-build docker-test docker-shell
 
 build:
 	mkdir -p bin
@@ -23,6 +23,9 @@ install: build
 	install -m 755 bin/makepkg $(BINDIR)/makepkg
 	mkdir -p $(MANDIR)/man1
 	install -m 644 makepkg.1 $(MANDIR)/man1/makepkg.1
+
+regenerate-readme:
+	mandoc -T ascii makepkg.1 | col -b > README.txt
 
 # Docker targets for testing on Linux x86_64
 docker-build: build-linux
