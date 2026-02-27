@@ -34,7 +34,7 @@ archives:
       {{- .Os }}_
       {{- .Arch }}
     files:
-      - README.md
+      - README.txt
       - LICENSE*
       - makepkg.1
 
