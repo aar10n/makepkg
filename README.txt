@@ -144,10 +144,12 @@ PACKAGE CONFIGURATION FORMAT
                          format. May reference other variables.
              files       Array of file entries to create in the source
                          directory before building.  Each entry has a name
-                         (relative path) and content (file contents).
-                         Intermediate directories are created automatically.
-                         File names must not be empty, `.', `..', or end with
-                         `/'.
+                         (relative path) and either content (inline file
+                         contents) or path (path to an existing file to copy).
+                         Paths are resolved relative to the configuration file
+                         directory.  Intermediate directories are created
+                         automatically.  File names must not be empty, `.',
+                         `..', or end with `/'.
              depends_on  Array of package names this package depends on
 
      Example YAML configuration:
@@ -192,8 +194,7 @@ PACKAGE CONFIGURATION FORMAT
                      +++ b/Configure
                      @@ example patch content
                  - name: config/site.conf
-                   content: |-
-                     SYSROOT=${SYS_ROOT}
+                   path: files/openssl-site.conf
                build: |
                  mkpkg::apply_patch config.patch
                  mkpkg::get_artifact build-tools mytool
@@ -266,7 +267,7 @@ ENVIRONMENT VARIABLE SUBSTITUTION
      o   Package url field
      o   Package build, install, and clean scripts
      o   Package env values (the part after the equals sign)
-     o   Package files content
+     o   Package files content and path
      o   Toolchain arch, host, bin, and cross_prefix
      o   Toolchain extra_programs entries
 

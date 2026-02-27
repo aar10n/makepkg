@@ -417,19 +417,39 @@ func (b *Builder) buildPackage(ctx context.Context, pkg *config.Package) error {
 			b.Info("  Writing %d file(s) for %s...", len(pkg.Files), pkg.Name)
 			if !b.builderCfg.DryRun {
 				for _, f := range pkg.Files {
-					filePath := filepath.Join(sourceDir, f.Name)
-					if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+					destPath := filepath.Join(sourceDir, f.Name)
+					if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 						b.recordResult(pkg.Name, false, err, "")
 						return fmt.Errorf("failed to create directory for file %s: %w", f.Name, err)
 					}
-					if err := os.WriteFile(filePath, []byte(f.Content), 0644); err != nil {
-						b.recordResult(pkg.Name, false, err, "")
-						return fmt.Errorf("failed to write file %s: %w", f.Name, err)
+					if f.Path != "" {
+						srcPath := f.Path
+						if !filepath.IsAbs(srcPath) {
+							srcPath = filepath.Join(filepath.Dir(pkg.PackagesFile), srcPath)
+						}
+						data, err := os.ReadFile(srcPath)
+						if err != nil {
+							b.recordResult(pkg.Name, false, err, "")
+							return fmt.Errorf("failed to read file %s: %w", srcPath, err)
+						}
+						if err := os.WriteFile(destPath, data, 0644); err != nil {
+							b.recordResult(pkg.Name, false, err, "")
+							return fmt.Errorf("failed to write file %s: %w", f.Name, err)
+						}
+					} else {
+						if err := os.WriteFile(destPath, []byte(f.Content), 0644); err != nil {
+							b.recordResult(pkg.Name, false, err, "")
+							return fmt.Errorf("failed to write file %s: %w", f.Name, err)
+						}
 					}
 				}
 			} else {
 				for _, f := range pkg.Files {
-					b.Info("    Would write file: %s", f.Name)
+					if f.Path != "" {
+						b.Info("    Would copy file: %s (from %s)", f.Name, f.Path)
+					} else {
+						b.Info("    Would write file: %s", f.Name)
+					}
 				}
 			}
 		}

@@ -14,9 +14,11 @@ import (
 )
 
 // FileEntry represents a file to be created in the package build directory.
+// Either Content or Path must be specified, but not both.
 type FileEntry struct {
 	Name    string `yaml:"name" toml:"name"`
-	Content string `yaml:"content" toml:"content"`
+	Content string `yaml:"content,omitempty" toml:"content,omitempty"`
+	Path    string `yaml:"path,omitempty" toml:"path,omitempty"`
 }
 
 // Package represents a single package definition.
@@ -49,6 +51,7 @@ func (p *Package) Subst(env env.Env) {
 	}
 	for i := range p.Files {
 		p.Files[i].Content = env.Subst(p.Files[i].Content)
+		p.Files[i].Path = env.Subst(p.Files[i].Path)
 	}
 }
 
@@ -107,6 +110,12 @@ func (c *Config) Validate() error {
 				if part == ".." {
 					return fmt.Errorf("package %s has a file entry with invalid name %q", pkg.Name, f.Name)
 				}
+			}
+			if f.Content == "" && f.Path == "" {
+				return fmt.Errorf("package %s file %q must specify either content or path", pkg.Name, f.Name)
+			}
+			if f.Content != "" && f.Path != "" {
+				return fmt.Errorf("package %s file %q must specify either content or path, not both", pkg.Name, f.Name)
 			}
 		}
 

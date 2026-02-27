@@ -18,7 +18,8 @@ const (
 // CachedFile stores the cached file entry for a package.
 type CachedFile struct {
 	Name    string `json:"name"`
-	Content string `json:"content"`
+	Content string `json:"content,omitempty"`
+	Path    string `json:"path,omitempty"`
 }
 
 // Info stores the cached build information for a package.
@@ -93,7 +94,7 @@ func (c *cache) WriteBuild(pkgName, sysroot, host string, pkg *config.Package) e
 
 	cache.Files = nil
 	for _, f := range pkg.Files {
-		cache.Files = append(cache.Files, CachedFile{Name: f.Name, Content: f.Content})
+		cache.Files = append(cache.Files, CachedFile{Name: f.Name, Content: f.Content, Path: f.Path})
 	}
 
 	return c.write(pkgName, cache)
@@ -325,7 +326,7 @@ func filesChanged(cached []CachedFile, current []config.FileEntry) bool {
 		return true
 	}
 	for i := range cached {
-		if cached[i].Name != current[i].Name || cached[i].Content != current[i].Content {
+		if cached[i].Name != current[i].Name || cached[i].Content != current[i].Content || cached[i].Path != current[i].Path {
 			return true
 		}
 	}

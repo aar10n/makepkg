@@ -205,9 +205,12 @@ format. May reference other variables.
 Array of file entries to create in the source directory before building.
 Each entry has a
 .Sy name
-(relative path) and
+(relative path) and either
 .Sy content
-(file contents).
+(inline file contents) or
+.Sy path
+(path to an existing file to copy).
+Paths are resolved relative to the configuration file directory.
 Intermediate directories are created automatically.
 File names must not be empty,
 .Ql \&. ,
@@ -261,8 +264,7 @@ packages:
           +++ b/Configure
           @@ example patch content
       - name: config/site.conf
-        content: |-
-          SYSROOT=${SYS_ROOT}
+        path: files/openssl-site.conf
     build: |
       mkpkg::apply_patch config.patch
       mkpkg::get_artifact build-tools mytool
@@ -386,7 +388,7 @@ values (the part after the equals sign)
 .It
 Package
 .Sy files
-content
+content and path
 .It
 Toolchain
 .Sy arch ,
