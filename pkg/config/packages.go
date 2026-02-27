@@ -13,17 +13,24 @@ import (
 	"github.com/aar10n/makepkg/pkg/logger"
 )
 
+// FileEntry represents a file to be created in the package build directory.
+type FileEntry struct {
+	Name    string `yaml:"name" toml:"name"`
+	Content string `yaml:"content" toml:"content"`
+}
+
 // Package represents a single package definition.
 type Package struct {
-	Name         string   `yaml:"name" toml:"name"`
-	URL          string   `yaml:"url" toml:"url"`
-	Native       bool     `yaml:"native,omitempty" toml:"native,omitempty"`
-	Build        string   `yaml:"build" toml:"build"`
-	Install      string   `yaml:"install" toml:"install"`
-	Clean        string   `yaml:"clean,omitempty" toml:"clean,omitempty"`
-	Env          []string `yaml:"env,omitempty" toml:"env,omitempty"`
-	DependsOn    []string `yaml:"depends_on,omitempty" toml:"depends_on,omitempty"`
-	PackagesFile string   `yaml:"-" toml:"-"`
+	Name         string      `yaml:"name" toml:"name"`
+	URL          string      `yaml:"url" toml:"url"`
+	Native       bool        `yaml:"native,omitempty" toml:"native,omitempty"`
+	Build        string      `yaml:"build" toml:"build"`
+	Install      string      `yaml:"install" toml:"install"`
+	Clean        string      `yaml:"clean,omitempty" toml:"clean,omitempty"`
+	Env          []string    `yaml:"env,omitempty" toml:"env,omitempty"`
+	Files        []FileEntry `yaml:"files,omitempty" toml:"files,omitempty"`
+	DependsOn    []string    `yaml:"depends_on,omitempty" toml:"depends_on,omitempty"`
+	PackagesFile string      `yaml:"-" toml:"-"`
 }
 
 func (p *Package) Subst(env env.Env) {
@@ -39,6 +46,9 @@ func (p *Package) Subst(env env.Env) {
 
 	for i, e := range p.Env {
 		p.Env[i] = env.Subst(e)
+	}
+	for i := range p.Files {
+		p.Files[i].Content = env.Subst(p.Files[i].Content)
 	}
 }
 
@@ -86,6 +96,18 @@ func (c *Config) Validate() error {
 
 		if pkg.Install == "" {
 			return fmt.Errorf("package %s missing install command", pkg.Name)
+		}
+
+		for _, f := range pkg.Files {
+			if f.Name == "" || f.Name == "." || f.Name == ".." || strings.HasSuffix(f.Name, "/") {
+				return fmt.Errorf("package %s has a file entry with invalid name %q", pkg.Name, f.Name)
+			}
+			// Check each path component for ".."
+			for _, part := range strings.Split(f.Name, "/") {
+				if part == ".." {
+					return fmt.Errorf("package %s has a file entry with invalid name %q", pkg.Name, f.Name)
+				}
+			}
 		}
 
 		for _, dep := range pkg.DependsOn {

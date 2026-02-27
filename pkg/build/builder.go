@@ -412,6 +412,28 @@ func (b *Builder) buildPackage(ctx context.Context, pkg *config.Package) error {
 			}
 		}
 
+		// Write package files to source directory
+		if len(pkg.Files) > 0 {
+			b.Info("  Writing %d file(s) for %s...", len(pkg.Files), pkg.Name)
+			if !b.builderCfg.DryRun {
+				for _, f := range pkg.Files {
+					filePath := filepath.Join(sourceDir, f.Name)
+					if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+						b.recordResult(pkg.Name, false, err, "")
+						return fmt.Errorf("failed to create directory for file %s: %w", f.Name, err)
+					}
+					if err := os.WriteFile(filePath, []byte(f.Content), 0644); err != nil {
+						b.recordResult(pkg.Name, false, err, "")
+						return fmt.Errorf("failed to write file %s: %w", f.Name, err)
+					}
+				}
+			} else {
+				for _, f := range pkg.Files {
+					b.Info("    Would write file: %s", f.Name)
+				}
+			}
+		}
+
 		b.Info("  Compiling %s...", pkg.Name)
 		b.Debug("=== Build environment for %s ===", pkg.Name)
 		logEnvironment(pkgEnv.ToSlice())

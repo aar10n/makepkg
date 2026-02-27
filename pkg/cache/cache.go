@@ -15,14 +15,21 @@ const (
 	sourceDir     = "source"
 )
 
+// CachedFile stores the cached file entry for a package.
+type CachedFile struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
 // Info stores the cached build information for a package.
 type Info struct {
-	URL     string   `json:"url"`
-	Build   string   `json:"build"`
-	Install string   `json:"install"`
-	Env     []string `json:"env"`
-	Host    string   `json:"host"`
-	Sysroot string   `json:"sysroot"`
+	URL     string       `json:"url"`
+	Build   string       `json:"build"`
+	Install string       `json:"install"`
+	Env     []string     `json:"env"`
+	Files   []CachedFile `json:"files,omitempty"`
+	Host    string       `json:"host"`
+	Sysroot string       `json:"sysroot"`
 }
 
 type Cache interface {
@@ -83,6 +90,11 @@ func (c *cache) WriteBuild(pkgName, sysroot, host string, pkg *config.Package) e
 	cache.Env = pkg.Env
 	cache.Host = host
 	cache.Sysroot = sysroot
+
+	cache.Files = nil
+	for _, f := range pkg.Files {
+		cache.Files = append(cache.Files, CachedFile{Name: f.Name, Content: f.Content})
+	}
 
 	return c.write(pkgName, cache)
 }
@@ -230,6 +242,11 @@ func (c *cache) needsRebuildWithReason(pkg *config.Package, sysroot, host string
 		return true, "build script changed", nil
 	}
 
+	if filesChanged(cache.Files, pkg.Files) {
+		logger.Debug("  %s needs rebuild: files changed", pkg.Name)
+		return true, "files changed", nil
+	}
+
 	if changed, reason := c.checkCommonCacheChanges(cache, pkg, sysroot, host); changed {
 		logger.Debug("  %s needs rebuild: %s", pkg.Name, reason)
 		return true, reason, nil
@@ -301,6 +318,18 @@ func (c *cache) findDependents(pkgName string, cfg *config.Config) []string {
 	}
 
 	return result
+}
+
+func filesChanged(cached []CachedFile, current []config.FileEntry) bool {
+	if len(cached) != len(current) {
+		return true
+	}
+	for i := range cached {
+		if cached[i].Name != current[i].Name || cached[i].Content != current[i].Content {
+			return true
+		}
+	}
+	return false
 }
 
 func stringSlicesEqual(a, b []string) bool {

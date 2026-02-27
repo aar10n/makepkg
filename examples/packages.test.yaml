@@ -22,7 +22,14 @@ packages:
 
   - name: file
     url: http://ftp.astron.com/pub/file/file-5.45.tar.gz
+    files:
+      - name: patches/fix-static.patch
+        content: |-
+          --- a/src/Makefile.in
+          +++ b/src/Makefile.in
+          @@ example patch content
     build: |
+      mkpkg::apply_patch patches/fix-static.patch
       ./configure --prefix=/usr --enable-static --disable-shared --disable-libseccomp
       touch aclocal.m4 configure Makefile.in src/Makefile.in magic/Makefile.in config.h.in
       make -C src magic.h libmagic.la

@@ -200,7 +200,20 @@ Custom shell script for cleaning the package
 .It Sy env
 Array of environment variables in
 .Ql NAME=VALUE
-format. May reference other make
+format. May reference other variables.
+.It Sy files
+Array of file entries to create in the source directory before building.
+Each entry has a
+.Sy name
+(relative path) and
+.Sy content
+(file contents).
+Intermediate directories are created automatically.
+File names must not be empty,
+.Ql \&. ,
+.Ql .. ,
+or end with
+.Ql / .
 .It Sy depends_on
 Array of package names this package depends on
 .El
@@ -241,7 +254,17 @@ packages:
       - build-tools
     env:
       - CFLAGS=-O2 -g
+    files:
+      - name: config.patch
+        content: |-
+          --- a/Configure
+          +++ b/Configure
+          @@ example patch content
+      - name: config/site.conf
+        content: |-
+          SYSROOT=${SYS_ROOT}
     build: |
+      mkpkg::apply_patch config.patch
       mkpkg::get_artifact build-tools mytool
       ./config --prefix=/usr --openssldir=/etc/ssl
       make
@@ -360,6 +383,10 @@ scripts
 Package
 .Sy env
 values (the part after the equals sign)
+.It
+Package
+.Sy files
+content
 .It
 Toolchain
 .Sy arch ,
@@ -645,6 +672,8 @@ The package has never been built
 The package URL has changed
 .It
 The build script has changed
+.It
+The package files have changed
 .It
 The install script has changed
 .It

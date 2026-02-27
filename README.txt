@@ -141,7 +141,13 @@ PACKAGE CONFIGURATION FORMAT
                          added to the build environment.  Defaults to false.
              clean       Custom shell script for cleaning the package
              env         Array of environment variables in `NAME=VALUE'
-                         format. May reference other make
+                         format. May reference other variables.
+             files       Array of file entries to create in the source
+                         directory before building.  Each entry has a name
+                         (relative path) and content (file contents).
+                         Intermediate directories are created automatically.
+                         File names must not be empty, `.', `..', or end with
+                         `/'.
              depends_on  Array of package names this package depends on
 
      Example YAML configuration:
@@ -179,7 +185,17 @@ PACKAGE CONFIGURATION FORMAT
                  - build-tools
                env:
                  - CFLAGS=-O2 -g
+               files:
+                 - name: config.patch
+                   content: |-
+                     --- a/Configure
+                     +++ b/Configure
+                     @@ example patch content
+                 - name: config/site.conf
+                   content: |-
+                     SYSROOT=${SYS_ROOT}
                build: |
+                 mkpkg::apply_patch config.patch
                  mkpkg::get_artifact build-tools mytool
                  ./config --prefix=/usr --openssldir=/etc/ssl
                  make
@@ -250,6 +266,7 @@ ENVIRONMENT VARIABLE SUBSTITUTION
      o   Package url field
      o   Package build, install, and clean scripts
      o   Package env values (the part after the equals sign)
+     o   Package files content
      o   Toolchain arch, host, bin, and cross_prefix
      o   Toolchain extra_programs entries
 
@@ -461,6 +478,8 @@ CACHING AND REBUILDING
 
      o   The build script has changed
 
+     o   The package files have changed
+
      o   The install script has changed
 
      o   The target host has changed
@@ -526,4 +545,4 @@ AUTHORS
 BUGS
      Report bugs at: https://github.com/aar10n/makepkg
 
-macOS 15.5                      January 5, 2025                     macOS 15.5
+macOS 26.3                      January 5, 2025                     macOS 26.3
