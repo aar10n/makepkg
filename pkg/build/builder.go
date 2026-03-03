@@ -432,12 +432,14 @@ func (b *Builder) buildPackage(ctx context.Context, pkg *config.Package) error {
 							b.recordResult(pkg.Name, false, err, "")
 							return fmt.Errorf("failed to read file %s: %w", srcPath, err)
 						}
-						if err := os.WriteFile(destPath, data, 0644); err != nil {
+						content := pkgEnv.Subst(string(data))
+						if err := os.WriteFile(destPath, []byte(content), 0644); err != nil {
 							b.recordResult(pkg.Name, false, err, "")
 							return fmt.Errorf("failed to write file %s: %w", f.Name, err)
 						}
 					} else {
-						if err := os.WriteFile(destPath, []byte(f.Content), 0644); err != nil {
+						content := pkgEnv.Subst(f.Content)
+						if err := os.WriteFile(destPath, []byte(content), 0644); err != nil {
 							b.recordResult(pkg.Name, false, err, "")
 							return fmt.Errorf("failed to write file %s: %w", f.Name, err)
 						}

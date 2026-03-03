@@ -212,6 +212,12 @@ Each entry has a
 (path to an existing file to copy).
 Paths are resolved relative to the configuration file directory.
 Intermediate directories are created automatically.
+File contents (both inline and path-sourced) undergo variable substitution
+using the full build environment, including toolchain variables such as
+.Ev CC ,
+.Ev CXX ,
+.Ev AR ,
+sysroot-derived variables, and package-specific environment variables.
 File names must not be empty,
 .Ql \&. ,
 .Ql .. ,
@@ -388,7 +394,8 @@ values (the part after the equals sign)
 .It
 Package
 .Sy files
-content and path
+path (during configuration loading) and content (at build time, with the
+full build environment including toolchain and sysroot variables)
 .It
 Toolchain
 .Sy arch ,

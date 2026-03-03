@@ -50,7 +50,6 @@ func (p *Package) Subst(env env.Env) {
 		p.Env[i] = env.Subst(e)
 	}
 	for i := range p.Files {
-		p.Files[i].Content = env.Subst(p.Files[i].Content)
 		p.Files[i].Path = env.Subst(p.Files[i].Path)
 	}
 }

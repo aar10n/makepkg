@@ -148,8 +148,12 @@ PACKAGE CONFIGURATION FORMAT
                          contents) or path (path to an existing file to copy).
                          Paths are resolved relative to the configuration file
                          directory.  Intermediate directories are created
-                         automatically.  File names must not be empty, `.',
-                         `..', or end with `/'.
+                         automatically.  File contents (both inline and path-
+                         sourced) undergo variable substitution using the full
+                         build environment, including toolchain variables such
+                         as CC, CXX, AR, sysroot-derived variables, and
+                         package-specific environment variables.  File names
+                         must not be empty, `.', `..', or end with `/'.
              depends_on  Array of package names this package depends on
 
      Example YAML configuration:
@@ -267,7 +271,9 @@ ENVIRONMENT VARIABLE SUBSTITUTION
      o   Package url field
      o   Package build, install, and clean scripts
      o   Package env values (the part after the equals sign)
-     o   Package files content and path
+     o   Package files path (during configuration loading) and content (at
+         build time, with the full build environment including toolchain and
+         sysroot variables)
      o   Toolchain arch, host, bin, and cross_prefix
      o   Toolchain extra_programs entries
 
